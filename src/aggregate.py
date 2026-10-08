@@ -74,7 +74,19 @@ def summarize_cell(recs):
         "max_score": recs[0]["max_score"],
         "mean_seconds": statistics.mean(r["seconds"] for r in recs),
         "mean_input_tokens": statistics.mean(r["input_tokens"] for r in recs),
+        "mean_video_tokens": _mean_token_field(recs, "video"),
+        "mean_audio_tokens": _mean_token_field(recs, "audio"),
+        "mean_text_tokens": _mean_token_field(recs, "text_and_control"),
+        "mean_output_tokens": _mean_token_field(recs, "output"),
     }
+
+
+def _mean_token_field(recs, field):
+    """Mean of tokens[field] across runs. None if no run recorded it -- runs predating
+    the per-modality split have no `tokens` key, and unresolved modalities are None."""
+    vals = [r["tokens"][field] for r in recs
+            if isinstance(r.get("tokens"), dict) and r["tokens"].get(field) is not None]
+    return statistics.mean(vals) if vals else None
 
 
 def fmt(x, nd=2):
@@ -111,14 +123,18 @@ def main():
         w.writerow(["interview_id", "prompt_variant", "mode", "question_id", "metric",
                     "point_score", "point_source", "max_score", "weight", "n_runs",
                     "all_scores", "spread", "agree_exact", "agree_within_one",
-                    "n_null", "n_parse_fail", "mean_input_tokens", "mean_seconds"])
+                    "n_null", "n_parse_fail", "mean_input_tokens", "mean_seconds",
+                    "mean_video_tokens", "mean_audio_tokens", "mean_text_tokens",
+                    "mean_output_tokens"])
         for (iid, var, mode, qid), s in sorted(summary.items()):
             w.writerow([iid, var, mode, qid, s["metric"], fmt(s["point"]),
                         s["point_source"], s["max_score"], s["weight"], s["n_runs"],
                         "|".join("null" if x is None else str(x) for x in s["scores"]),
                         fmt(s["spread"]), fmt(s["agree_exact"]),
                         fmt(s["agree_within_one"]), s["n_null"], s["n_parse_fail"],
-                        fmt(s["mean_input_tokens"], 0), fmt(s["mean_seconds"], 1)])
+                        fmt(s["mean_input_tokens"], 0), fmt(s["mean_seconds"], 1),
+                        fmt(s["mean_video_tokens"], 0), fmt(s["mean_audio_tokens"], 0),
+                        fmt(s["mean_text_tokens"], 0), fmt(s["mean_output_tokens"], 0)])
 
     # ---- markdown report ---------------------------------------------------
     lines = ["# Qwen3-Omni interview scoring report", ""]
@@ -209,6 +225,38 @@ def main():
                 else:
                     lines.append(f"- {mode}: too few scored questions")
             lines.append("")
+
+            # ---- token cost by modality -----------------------------------
+            rows_out = []
+            for mode in modes:
+                cells = [summary[(iid, var, mode, q)] for q in qids
+                         if (iid, var, mode, q) in summary]
+                if not cells:
+                    continue
+                def avg(field):
+                    vals = [c[field] for c in cells if c[field] is not None]
+                    return statistics.mean(vals) if vals else None
+                rows_out.append((mode, avg("mean_input_tokens"), avg("mean_video_tokens"),
+                                 avg("mean_audio_tokens"), avg("mean_text_tokens"),
+                                 avg("mean_output_tokens"), avg("mean_seconds")))
+            if rows_out:
+                lines += ["#### Token cost per call (mean across questions)", "",
+                          "| mode | input | video | audio | text | output | sec |",
+                          "|---|---|---|---|---|---|---|"]
+                for mode, tot, vid, aud, txt, out_t, sec in rows_out:
+                    lines.append(f"| {mode} | {fmt(tot, 0)} | {fmt(vid, 0)} | "
+                                 f"{fmt(aud, 0)} | {fmt(txt, 0)} | {fmt(out_t, 0)} | "
+                                 f"{fmt(sec, 1)} |")
+                lines.append("")
+                vid_mode = next((r for r in rows_out if r[0] == "video"), None)
+                if vid_mode and vid_mode[1]:
+                    share = [(name, val / vid_mode[1]) for name, val in
+                             (("video", vid_mode[2]), ("audio", vid_mode[3]),
+                              ("text", vid_mode[4])) if val is not None]
+                    if share:
+                        lines.append("Share of the full-recording prompt: "
+                                     + ", ".join(f"{n} {f:.0%}" for n, f in share))
+                        lines.append("")
 
             # ---- ablation: what do the non-text channels change? ----------
             if "video" in modes and "text" in modes:

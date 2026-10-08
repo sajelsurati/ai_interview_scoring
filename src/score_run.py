@@ -160,11 +160,12 @@ def main():
         temperature = 0.0 if run == 0 else args.temperature
 
         t1 = time.time()
-        raw, n_input = omni.generate(
+        raw, tokens = omni.generate(
             model, processor, conversation, use_aiv,
             max_new_tokens=args.max_new_tokens, temperature=temperature, seed=run,
         )
         elapsed = time.time() - t1
+        n_input = tokens["total"]
         parsed, err = omni.parse_score_json(raw)
 
         record = {
@@ -178,7 +179,8 @@ def main():
             "rubric_sha": row["_rubric_sha"],
             "temperature": temperature,
             "model": omni.MODEL_ID,
-            "input_tokens": n_input,
+            "input_tokens": n_input,          # total, kept for compatibility
+            "tokens": tokens,                 # per-modality split + media shapes
             "seconds": round(elapsed, 2),
             "weight": row["weight"],
             "max_score": row["max_score"],
@@ -192,7 +194,7 @@ def main():
         flag = "" if parsed else f"  PARSE-FAIL({err})"
         print(f"[{i}/{len(todo)}] {row['interview_id']}/{row['question_id']} "
               f"{mode} r{run} -> score={record['score']} "
-              f"({n_input} tok, {elapsed:.1f}s){flag}", flush=True)
+              f"[{omni.format_breakdown(tokens)}, {elapsed:.1f}s]{flag}", flush=True)
 
 
 if __name__ == "__main__":

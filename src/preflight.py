@@ -10,6 +10,7 @@ the top of a job before paying for a 70GB model load.
 
 import argparse
 import json
+import statistics
 import subprocess
 from pathlib import Path
 
@@ -45,8 +46,14 @@ def main():
         rows = list(csv.DictReader(fh))
 
     problems = []
-    print(f"{'question':10} {'dur(s)':>7} {'A/V':>5} {'tokens':>8}  rubric")
-    print("-" * 68)
+    totals = []
+    if args.tokenize:
+        print(f"{'question':10} {'dur(s)':>7} {'A/V':>5} {'total':>7} {'video':>7} "
+              f"{'audio':>7} {'text':>6} {'tok/s':>6}  metric")
+        print("-" * 96)
+    else:
+        print(f"{'question':10} {'dur(s)':>7} {'A/V':>5}  metric")
+        print("-" * 46)
 
     processor = None
     if args.tokenize:
@@ -63,7 +70,7 @@ def main():
             problems.append(f"{qid}: missing rubric {rubric}")
         if not video.exists():
             problems.append(f"{qid}: missing video {video}")
-            print(f"{qid:10} {'-':>7} {'-':>5} {'-':>8}  MISSING VIDEO")
+            print(f"{qid:10} {'-':>7} {'-':>5}  MISSING VIDEO")
             continue
 
         duration, has_v, has_a = probe(video)
@@ -72,25 +79,64 @@ def main():
         if not has_v:
             problems.append(f"{qid}: no video stream")
 
-        n_tok = "-"
-        if processor is not None:
-            import omni
-            from score_run import render_prompt
-            prompt, _ = render_prompt(
-                (ROOT / args.prompt).read_text(encoding="utf-8"),
-                {**row, "max_score": int(row.get("max_score") or 5)},
-            )
-            conv, use_aiv = omni.build_conversation("video", prompt, video, None)
-            inputs = omni.prepare_inputs(processor, conv, use_aiv, "cpu", None)
-            n_tok = int(inputs["input_ids"].shape[1])
-            if n_tok > CONTEXT_LIMIT * WARN_FRACTION:
-                problems.append(
-                    f"{qid}: {n_tok} input tokens is over {WARN_FRACTION:.0%} of "
-                    f"{CONTEXT_LIMIT} — lower FPS or max_pixels"
-                )
-
         av = f"{'V' if has_v else '-'}{'A' if has_a else '-'}"
-        print(f"{qid:10} {duration:7.1f} {av:>5} {str(n_tok):>8}  {row['metric']}")
+
+        if processor is None:
+            print(f"{qid:10} {duration:7.1f} {av:>5}  {row['metric']}")
+            continue
+
+        import omni
+        from score_run import render_prompt
+        prompt, _ = render_prompt(
+            (ROOT / args.prompt).read_text(encoding="utf-8"),
+            {**row, "max_score": int(row.get("max_score") or 5)},
+        )
+        conv, use_aiv = omni.build_conversation("video", prompt, video, None)
+        inputs = omni.prepare_inputs(processor, conv, use_aiv, "cpu", None)
+        bd = omni.token_breakdown(processor, inputs)
+        totals.append((qid, duration, bd))
+
+        def cell(v):
+            return "?" if v is None else f"{v}"
+
+        rate = bd["total"] / duration if duration else 0
+        print(f"{qid:10} {duration:7.1f} {av:>5} {bd['total']:7} "
+              f"{cell(bd['video']):>7} {cell(bd['audio']):>7} "
+              f"{bd['text_and_control']:6} {rate:6.0f}  {row['metric']}")
+
+        if bd["total"] > CONTEXT_LIMIT * WARN_FRACTION:
+            problems.append(
+                f"{qid}: {bd['total']} input tokens is over {WARN_FRACTION:.0%} of "
+                f"{CONTEXT_LIMIT} — lower FPS or VIDEO_MAX_PIXELS"
+            )
+        for w in bd.get("warnings", []):
+            problems.append(f"{qid}: {w} (per-modality split unreliable)")
+
+    if totals:
+        print()
+        print("=== token budget ===")
+        grand = sum(bd["total"] for _, _, bd in totals)
+        vids = [bd["video"] for _, _, bd in totals if bd["video"] is not None]
+        auds = [bd["audio"] for _, _, bd in totals if bd["audio"] is not None]
+        print(f"  largest prompt:  {max(bd['total'] for _, _, bd in totals)} tokens "
+              f"({max(bd['total'] for _, _, bd in totals) / CONTEXT_LIMIT:.0%} of "
+              f"{CONTEXT_LIMIT})")
+        print(f"  all {len(totals)} prompts: {grand} tokens total")
+        if vids:
+            print(f"  video: {sum(vids)} tokens ({sum(vids)/grand:.0%} of input), "
+                  f"mean {statistics.mean(vids):.0f}/clip")
+        if auds:
+            print(f"  audio: {sum(auds)} tokens ({sum(auds)/grand:.0%} of input), "
+                  f"mean {statistics.mean(auds):.0f}/clip")
+        secs = sum(d for _, d, _ in totals)
+        if secs:
+            if vids:
+                print(f"  video rate: {sum(vids)/secs:.1f} tok/sec of footage")
+            if auds:
+                print(f"  audio rate: {sum(auds)/secs:.1f} tok/sec of footage")
+        shapes = totals[0][2].get("shapes")
+        if shapes:
+            print(f"  shapes (first clip): {shapes}")
 
     print()
     if problems:

@@ -48,8 +48,16 @@ conv = [
     {'role': 'user', 'content': [{'type': 'text', 'text':
         'Reply with exactly this JSON and nothing else: {\"ok\": true, \"score\": 3}'}]},
 ]
-raw, n = omni.generate(model, processor, conv, False, max_new_tokens=64)
+raw, tokens = omni.generate(model, processor, conv, False, max_new_tokens=64)
+print('tokens:', omni.format_breakdown(tokens))
 print('raw:', raw)
 print('parsed:', omni.parse_score_json(raw))
+
+# Text-only prompt, so the modality pad counts must be 0. A warning here means the
+# pad token ids could not be resolved and the per-modality split will be unusable.
+ids, warnings = omni.resolve_modality_token_ids(processor, model)
+print('modality token ids:', ids)
+if warnings:
+    print('TOKEN-ID WARNINGS:', warnings)
 PY
 "

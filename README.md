@@ -254,6 +254,32 @@ python src/preflight.py --manifest manifest.csv            # 0. login node, no G
 The full grid is 5 questions × 3 modes × 3 runs + 5 prompt-variant calls = 50 calls.
 `runs/` is checked before each call, so a preempted job can be requeued and resumes.
 
+## Token accounting
+
+Every call records how many tokens each modality cost. The split is measured, not
+estimated: the processor expands one placeholder in the chat template into N copies of a
+per-modality pad token, so counting those pad tokens in `input_ids` gives the exact cost
+without replicating the patch-merge or audio-pooling arithmetic.
+
+Where it shows up:
+
+- **`src/preflight.py --tokenize`** — per-clip table (total / video / audio / text /
+  tokens-per-second) plus a budget summary, before any GPU time is spent. This is where
+  you tune `FPS` and `VIDEO_MAX_PIXELS`.
+- **`score_run.py` log lines** — `[8421 tok (vid 6912 / aud 1180 / txt 329), 31.4s]`.
+- **Each run JSON** — a `tokens` object with per-modality counts, `output` tokens, and
+  `shapes` (`video_grid_thw`, mel-frame count, pixel tensor dims).
+- **`reports/report.md`** — mean cost per call by mode, and video/audio/text share of
+  the full-recording prompt.
+- **`reports/scores_long.csv`** — `mean_video_tokens`, `mean_audio_tokens`,
+  `mean_text_tokens`, `mean_output_tokens`.
+
+If the pad token ids can't be resolved — the token names have moved between Qwen
+releases — the per-modality values come back `null` with a `warnings` entry rather than
+a misleading `0`, `preflight` reports it as a problem, and `smoke.sbatch` prints the
+resolved ids so you find out on the first job rather than at analysis time. Totals are
+always correct regardless, since they're just the sequence length.
+
 ## Reading the report
 
 `reports/report.md` gives per-question scores by modality, interview totals, and:

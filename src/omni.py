@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 MODEL_ID = os.environ.get("QWEN_OMNI_MODEL", "Qwen/Qwen3-Omni-30B-A3B-Instruct")
@@ -133,6 +134,132 @@ def prepare_inputs(processor, conversation, use_audio_in_video, device, dtype):
     return inputs
 
 
+# --- per-modality token accounting ------------------------------------------
+#
+# The processor expands one placeholder in the chat template into N copies of a
+# per-modality pad token, where N is however many tokens that media actually costs.
+# Counting those pad tokens in input_ids therefore gives the exact split, with no
+# need to replicate the patch-merge or audio-pooling arithmetic ourselves.
+#
+# Token *names* and config *attribute* names have both moved between Qwen releases,
+# so resolution tries several candidates and reports failure rather than returning a
+# silent zero -- a zero that means "not measured" would be worse than no number.
+
+_PAD_TOKEN_NAMES = {
+    "audio": ("<|audio_pad|>", "<|AUDIO|>", "<|audio|>"),
+    "video": ("<|video_pad|>", "<|VIDEO|>", "<|video|>"),
+    "image": ("<|image_pad|>", "<|IMAGE|>", "<|image|>"),
+}
+
+_CONFIG_ID_ATTRS = {
+    "audio": ("audio_token_index", "audio_token_id"),
+    "video": ("video_token_index", "video_token_id"),
+    "image": ("image_token_index", "image_token_id"),
+}
+
+
+def resolve_modality_token_ids(processor, model=None):
+    """Best-effort map of modality -> pad token id. Returns (ids, warnings)."""
+    ids, warnings = {}, []
+    tokenizer = getattr(processor, "tokenizer", None)
+    unk = getattr(tokenizer, "unk_token_id", None) if tokenizer else None
+
+    configs = []
+    if model is not None:
+        cfg = getattr(model, "config", None)
+        for holder in (cfg,
+                       getattr(cfg, "thinker_config", None),
+                       getattr(cfg, "text_config", None)):
+            if holder is not None:
+                configs.append(holder)
+
+    for modality, names in _PAD_TOKEN_NAMES.items():
+        token_id = None
+
+        if tokenizer is not None:
+            for name in names:
+                try:
+                    candidate = tokenizer.convert_tokens_to_ids(name)
+                except Exception:          # noqa: BLE001 - tokenizer impls vary
+                    candidate = None
+                if candidate is not None and candidate >= 0 and candidate != unk:
+                    token_id = int(candidate)
+                    break
+
+        if token_id is None:
+            for holder in configs:
+                for attr in _CONFIG_ID_ATTRS[modality]:
+                    value = getattr(holder, attr, None)
+                    if value is not None:
+                        token_id = int(value)
+                        break
+                if token_id is not None:
+                    break
+
+        if token_id is None:
+            warnings.append(f"{modality}: pad token id unresolved")
+        else:
+            ids[modality] = token_id
+
+    return ids, warnings
+
+
+def token_breakdown(processor, inputs, model=None):
+    """Split the prompt's token count by modality.
+
+    Returns a dict with per-modality counts, the leftover ("text_and_control":
+    the chat template, the rubric, and the bos/eos markers wrapping each media
+    span), and the raw media tensor shapes, which are what you tune FPS and
+    VIDEO_MAX_PIXELS against.
+    """
+    input_ids = inputs["input_ids"]
+    # .tolist() rather than tensor ops: works for torch/numpy/plain lists alike,
+    # and a few thousand ints is free to count in Python.
+    flat = input_ids.reshape(-1).tolist() if hasattr(input_ids, "reshape") else list(input_ids)
+    total = len(flat)
+
+    ids, warnings = resolve_modality_token_ids(processor, model)
+    counts = Counter(flat)
+    per_modality = {m: int(counts.get(tid, 0)) for m, tid in ids.items()}
+
+    out = {
+        "total": total,
+        "audio": per_modality.get("audio"),
+        "video": per_modality.get("video"),
+        "image": per_modality.get("image"),
+    }
+    measured = sum(v for v in per_modality.values())
+    out["media"] = measured
+    out["text_and_control"] = total - measured
+    if warnings:
+        out["warnings"] = warnings
+
+    # Raw shapes: frame grid and mel-frame count. Useful on their own -- they tell
+    # you whether FPS/max_pixels took effect, independent of tokenization.
+    shapes = {}
+    if "video_grid_thw" in inputs and inputs["video_grid_thw"] is not None:
+        shapes["video_grid_thw"] = inputs["video_grid_thw"].tolist()
+    if "image_grid_thw" in inputs and inputs["image_grid_thw"] is not None:
+        shapes["image_grid_thw"] = inputs["image_grid_thw"].tolist()
+    for key in ("pixel_values_videos", "pixel_values", "input_features"):
+        if key in inputs and inputs[key] is not None:
+            shapes[f"{key}_shape"] = list(inputs[key].shape)
+    if "feature_attention_mask" in inputs and inputs["feature_attention_mask"] is not None:
+        shapes["audio_mel_frames"] = int(inputs["feature_attention_mask"].sum().item())
+    if shapes:
+        out["shapes"] = shapes
+
+    return out
+
+
+def format_breakdown(bd):
+    """One-line summary for logs, e.g. '8421 tok (vid 6912 / aud 1180 / txt 329)'."""
+    def num(x):
+        return "?" if x is None else str(x)
+    return (f"{bd['total']} tok (vid {num(bd.get('video'))} / "
+            f"aud {num(bd.get('audio'))} / txt {num(bd.get('text_and_control'))})")
+
+
 def generate(model, processor, conversation, use_audio_in_video,
              max_new_tokens=512, temperature=0.0, seed=0):
     import torch
@@ -140,6 +267,7 @@ def generate(model, processor, conversation, use_audio_in_video,
     inputs = prepare_inputs(
         processor, conversation, use_audio_in_video, model.device, model.dtype
     )
+    breakdown = token_breakdown(processor, inputs, model)
     kwargs = dict(
         max_new_tokens=max_new_tokens,
         return_audio=False,
@@ -159,7 +287,8 @@ def generate(model, processor, conversation, use_audio_in_video,
     decoded = processor.batch_decode(
         new_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0].strip()
-    return decoded, int(inputs["input_ids"].shape[1])
+    breakdown["output"] = int(new_tokens.shape[-1])
+    return decoded, breakdown
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
