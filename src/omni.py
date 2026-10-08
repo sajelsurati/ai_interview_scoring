@@ -113,6 +113,37 @@ def build_conversation(mode: str, prompt: str, media: Path | None, transcript: s
     return conversation, use_audio_in_video
 
 
+def _media_kwargs(processor, audios, images, videos):
+    """Map media onto the parameter names this processor version actually accepts.
+
+    Qwen3-Omni's processor takes `audio` (singular) but `images` and `videos`
+    (plural). Getting it wrong is nasty rather than obvious: transformers only WARNS
+    on an unrecognized kwarg and then drops the media, so the chat template still
+    inserts <|VIDEO|> placeholders and the failure surfaces much later as
+    `StopIteration` inside replace_multimodal_special_tokens. Resolve the names from
+    the real signature so a future rename cannot reintroduce that.
+    """
+    import inspect
+
+    try:
+        params = set(inspect.signature(processor.__call__).parameters)
+    except (TypeError, ValueError):
+        params = set()
+
+    def pick(candidates, value):
+        for name in candidates:
+            if name in params:
+                return {name: value}
+        # Signature unavailable or **kwargs-only: use the documented name.
+        return {candidates[0]: value}
+
+    kwargs = {}
+    kwargs.update(pick(("audio", "audios"), audios))
+    kwargs.update(pick(("images", "image"), images))
+    kwargs.update(pick(("videos", "video"), videos))
+    return kwargs
+
+
 def prepare_inputs(processor, conversation, use_audio_in_video, device, dtype):
     from qwen_omni_utils import process_mm_info
 
@@ -123,7 +154,8 @@ def prepare_inputs(processor, conversation, use_audio_in_video, device, dtype):
         conversation, use_audio_in_video=use_audio_in_video
     )
     inputs = processor(
-        text=text, audio=audios, image=images, video=videos,
+        text=text,
+        **_media_kwargs(processor, audios, images, videos),
         return_tensors="pt", padding=True, use_audio_in_video=use_audio_in_video,
     )
     inputs = inputs.to(device)
