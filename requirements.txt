@@ -1,0 +1,39 @@
+# Python dependencies for the Qwen3-Omni interview scoring pipeline.
+# Installed inside the Apptainer overlay by setup_env.sh.
+#
+# Deliberately NOT in this file:
+#   ffmpeg      conda-forge package, not a pip package. setup_env.sh installs it.
+#   flash-attn  needs --no-build-isolation and a torch that is already installed,
+#               so it cannot resolve in the same pass. See requirements-flashattn.txt.
+#
+# Bounds are loose on purpose: this has not been resolved against Torch's CUDA image
+# yet, and hard pins would turn a working build into a solver conflict. Once a build
+# succeeds, freeze it:
+#     pip freeze > requirements.lock.txt
+# and install from the lock file for every subsequent run.
+
+# --- torch -------------------------------------------------------------------
+# Default PyPI wheels bundle CUDA and support H100/H200 (sm_90). To force a
+# specific CUDA build, add a line like:
+#     --index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
+
+# --- model and multimodal preprocessing --------------------------------------
+# Qwen3-Omni requires a transformers release that ships
+# Qwen3OmniMoeForConditionalGeneration. Check the model card for the exact ref it
+# asks for and pin that here rather than trusting the floor below.
+transformers>=4.57
+accelerate
+qwen-omni-utils[decord]
+
+# --- media decoding and audio ------------------------------------------------
+# av is the fallback decoder when decord misbehaves; librosa/soundfile handle the
+# 16kHz mono wav the audio-only arm feeds in.
+av
+soundfile
+librosa
+
+# --- weight download (`hf download` in setup_env.sh) -------------------------
+huggingface_hub[cli]

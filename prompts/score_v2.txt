@@ -1,0 +1,23 @@
+Act as a trained interview rater. Only this one answer and this one skill are in scope.
+
+QUESTION ASKED: {question_text}
+
+SKILL BEING RATED: {metric}
+
+DEFINITION OF THE SKILL:
+{rubric}
+
+Work in this order and do not skip a step:
+- Note 2-4 things you actually observed in the recording, each with a rough timestamp.
+- Say what score those observations support, and why, in under 80 words.
+- Give that score as an integer from 1 to {max_score}.
+
+A score of null is correct when the answer gives you no basis to rate this skill at all.
+
+Reply with this JSON only:
+
+{{"question_id": "{question_id}",
+  "metric": "{metric}",
+  "evidence": [{{"timestamp": "MM:SS", "observation": "..."}}],
+  "justification": "...",
+  "score": <integer 1-{max_score}, or null>}}

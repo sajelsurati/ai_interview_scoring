@@ -1,0 +1,6 @@
+interview_id,question_id,question_text,metric,rubric,video,weight,max_score
+demo01,q1,"How do you clean and maintain a professional espresso machine?",familiarity_with_coffee_equipment,rubrics/familiarity_with_coffee_equipment.md,videos/demo01/q1.mp4,1,5
+demo01,q2,"What do you think are your personality strengths and weaknesses? How do they contribute to your ability to be a good barista?",sociability,rubrics/sociability.md,videos/demo01/q2.mp4,1,5
+demo01,q3,"How do you handle the repetitive nature of typical barista work?",work_ethic,rubrics/work_ethic.md,videos/demo01/q3.mp4,1,5
+demo01,q4,"Can you give one example each of a time you provided good customer service and a time a customer was dissatisfied with your service?",customer_service,rubrics/customer_service.md,videos/demo01/q4.mp4,1,5
+demo01,q5,"Can you tell me the difference between a cappuccino, a latte and a macchiato?",expertise_in_espresso_drink_preparation,rubrics/expertise_in_espresso_drink_preparation.md,videos/demo01/q5.mp4,1,5

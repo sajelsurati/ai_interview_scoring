@@ -1,0 +1,21 @@
+# Secrets -- never commit. HF_TOKEN etc.
+.env
+.env.*
+
+# Candidate data. Interview recordings and model outputs contain identifiable
+# personal information (faces, voices, verbatim transcripts). Keep them out of
+# version control and out of anything you share or publish.
+videos/
+raw/
+runs/
+reports/
+
+# Build artifacts and logs
+logs/
+__pycache__/
+*.pyc
+*.ext3
+*.sif
+
+# macOS
+.DS_Store

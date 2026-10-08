@@ -1,0 +1,17 @@
+# flash-attn, kept separate because it cannot be installed in the same pass as torch.
+#
+# Its setup.py imports torch at build time, so:
+#   - build isolation must be OFF (otherwise the build env has no torch)
+#   - torch must ALREADY be installed (so requirements.txt has to go first)
+#
+# Install with:
+#     MAX_JOBS=4 pip install --no-build-isolation -r requirements-flashattn.txt
+#
+# MAX_JOBS limits parallel nvcc processes; the default will exhaust RAM on a node
+# with many cores and fail the compile.
+#
+# This package is OPTIONAL. src/omni.py tries flash_attention_2 and falls back to
+# PyTorch's fused sdpa kernel if it is missing — slower, identical outputs.
+# setup_env.sh therefore treats a failure here as a warning, not an error.
+
+flash-attn
